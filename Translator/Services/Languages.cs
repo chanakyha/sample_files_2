@@ -9,7 +9,7 @@ namespace Translator.Services
     {
         public const string Default = "en";
 
-        // The 24 target languages offered in the "Translate" menu (Google Translate codes)
+        // The 24 target languages offered in the "Translate" menu (ISO codes; mapped to the server's codes by LibreTranslateService)
         public static readonly IReadOnlyDictionary<string, string> Targets =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
@@ -45,6 +45,7 @@ namespace Translator.Services
             {
                 ["iw"] = "he",
                 ["zh"] = "zh-CN",
+                ["zh-Hans"] = "zh-CN",
                 ["jw"] = "jv"
             };
 

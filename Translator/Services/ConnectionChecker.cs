@@ -1,11 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
-using System.Net.Security;
-using System.Net.Sockets;
-using System.Security.Authentication;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace Translator.Services
@@ -19,207 +17,156 @@ namespace Translator.Services
     }
 
     /// <summary>
-    /// Checks whether the network (e.g. corporate Wi-Fi) allows access to the translation service.
+    /// Checks the LibreTranslate server / load balancer configured in the settings. Read-only: it
+    /// only sends requests (the server is run and configured separately).
+    /// Uses the load balancer's test routes: GET /lb/health and GET /lb/selftest (a real test of
+    /// every worker), then one translation through the app's own code path.
     /// </summary>
     public static class ConnectionChecker
     {
-        private const string Host = "translate.googleapis.com";
-
-        private static readonly Uri TestUri = new Uri(
-            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=Bonjour");
-
-        public static async Task<List<CheckResult>> RunAsync()
+        public static async Task<List<CheckResult>> RunAsync(string baseUrl, string apiKey)
         {
-            var results = new List<CheckResult>();
-
-            results.Add(await CheckDnsAsync());
-
-            var proxyResult = CheckProxy(out var usesProxy);
-            results.Add(proxyResult);
-
-            results.Add(await CheckTcpAsync(usesProxy));
-            results.AddRange(await CheckHttpsAsync());
-
-            var request = results.Last();
-            results.Add(new CheckResult
+            var results = new List<CheckResult>
             {
-                Check = "Overall",
-                Status = request.Status == "OK" ? "OK" : "Failed",
-                Details = request.Status == "OK"
-                    ? "Translation will work on this network."
-                    : "Translation is not available on this network.",
-                Meaning = request.Status == "OK" ? "" : "See the 'Translation request' row for the reason."
-            });
-
-            return results;
-        }
-
-        private static async Task<CheckResult> CheckDnsAsync()
-        {
-            var result = new CheckResult { Check = "DNS lookup" };
-            try
-            {
-                var addresses = await Dns.GetHostAddressesAsync(Host);
-                result.Status = "OK";
-                result.Details = Host + " -> " + string.Join(", ", addresses.Take(3).Select(a => a.ToString()));
-                result.Meaning = "The server name can be found.";
-            }
-            catch (Exception ex)
-            {
-                result.Status = "Failed";
-                result.Details = ex.Message;
-                result.Meaning = "The name cannot be resolved. The network may block the site or only allow access through a proxy.";
-            }
-            return result;
-        }
-
-        private static CheckResult CheckProxy(out bool usesProxy)
-        {
-            var result = new CheckResult { Check = "Proxy" };
-            try
-            {
-                var proxy = HttpClient.DefaultProxy;
-                var proxyUri = proxy.GetProxy(TestUri);
-                usesProxy = proxyUri != null && proxyUri != TestUri && !proxy.IsBypassed(TestUri);
-
-                result.Status = "Info";
-                result.Details = usesProxy ? "Using proxy: " + proxyUri : "No proxy (direct connection)";
-                result.Meaning = usesProxy
-                    ? "Traffic goes through the corporate proxy (taken from Windows settings)."
-                    : "The app connects to the internet directly.";
-            }
-            catch (Exception ex)
-            {
-                usesProxy = false;
-                result.Status = "Warning";
-                result.Details = ex.Message;
-                result.Meaning = "Could not read the proxy settings.";
-            }
-            return result;
-        }
-
-        private static async Task<CheckResult> CheckTcpAsync(bool usesProxy)
-        {
-            var result = new CheckResult { Check = "Direct connection (port 443)" };
-            using var client = new TcpClient();
-            try
-            {
-                var connect = client.ConnectAsync(Host, 443);
-                if (await Task.WhenAny(connect, Task.Delay(5000)) != connect)
-                    throw new TimeoutException("Timed out after 5 seconds");
-                await connect;
-
-                result.Status = "OK";
-                result.Details = "Connected to " + Host + ":443";
-                result.Meaning = "A firewall is not blocking the connection.";
-            }
-            catch (Exception ex)
-            {
-                // With a proxy, a failed direct connection is expected and not a problem by itself
-                result.Status = usesProxy ? "Warning" : "Failed";
-                result.Details = ex.Message;
-                result.Meaning = usesProxy
-                    ? "Direct connections are blocked, but the proxy may still allow it. See the 'Translation request' row."
-                    : "A firewall is blocking the connection.";
-            }
-            return result;
-        }
-
-        private static async Task<IEnumerable<CheckResult>> CheckHttpsAsync()
-        {
-            string issuer = null;
-            var certErrors = SslPolicyErrors.None;
-
-            using var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (message, cert, chain, errors) =>
-                {
-                    issuer = cert?.Issuer;
-                    certErrors = errors;
-                    return errors == SslPolicyErrors.None; // keep normal validation
-                }
+                new CheckResult { Check = "Server address", Status = "Info", Details = baseUrl, Meaning = "Change it in Settings." }
             };
-            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+
+            var cache = new TranslationCache(Path.Combine(Path.GetTempPath(), "translator-check-" + Guid.NewGuid() + ".json"));
+            var service = new LibreTranslateService(baseUrl, apiKey, cache);
+
+            var languages = new CheckResult { Check = "Server reachable" };
+            IReadOnlyCollection<string> supported = null;
+            try
+            {
+                supported = await service.GetSupportedLanguagesAsync();
+                languages.Status = "OK";
+                languages.Details = $"{supported.Count} of 24 languages loaded: {string.Join(", ", supported)}";
+                languages.Meaning = supported.Count < 24
+                    ? "Missing languages are greyed out in the Translate menu. Set \"languages\": \"all\" in LibreTranslateServer\\config.json to load all."
+                    : "All languages are available.";
+            }
+            catch (Exception ex)
+            {
+                languages.Status = "Failed";
+                languages.Details = ex.Message;
+                languages.Meaning = "The server is not running (start LibreTranslateServer\\start.cmd), still starting, the address is wrong, or a firewall blocks it.";
+            }
+            results.Add(languages);
+
+            if (supported != null)
+                results.AddRange(await LoadBalancerAsync(baseUrl, apiKey));
 
             var request = new CheckResult { Check = "Translation request" };
-            try
+            if (supported == null)
             {
-                using var response = await http.GetAsync(TestUri);
-                var body = await response.Content.ReadAsStringAsync();
-                var code = (int)response.StatusCode;
-
-                if (response.IsSuccessStatusCode && body.TrimStart().StartsWith("[["))
-                {
-                    request.Status = "OK";
-                    request.Details = "HTTP " + code + " - 'Bonjour' was translated successfully";
-                    request.Meaning = "The translation service is reachable.";
-                }
-                else if (response.IsSuccessStatusCode)
-                {
-                    request.Status = "Failed";
-                    request.Details = "HTTP " + code + " but received a web page instead of translation data";
-                    request.Meaning = "Probably a web filter 'blocked' page. Ask IT to allow " + Host + ".";
-                }
-                else
-                {
-                    request.Status = "Failed";
-                    request.Details = "HTTP " + code + " " + response.ReasonPhrase;
-                    request.Meaning = code switch
-                    {
-                        403 => "Blocked by a web filter or policy. Ask IT to allow " + Host + ".",
-                        407 => "The proxy needs your Windows login, which the app does not send yet.",
-                        429 => "Not a corporate block: Google is rate-limiting requests. Try again later.",
-                        _ => "The request was rejected."
-                    };
-                }
-            }
-            catch (TaskCanceledException)
-            {
-                request.Status = "Failed";
-                request.Details = "Timed out after 10 seconds";
-                request.Meaning = "A firewall or proxy is silently dropping the request.";
-            }
-            catch (HttpRequestException ex) when (ex.InnerException is AuthenticationException || certErrors != SslPolicyErrors.None)
-            {
-                request.Status = "Failed";
-                request.Details = "Certificate error: " + certErrors;
-                request.Meaning = "The company inspects encrypted traffic and its certificate is not trusted on this PC.";
-            }
-            catch (Exception ex)
-            {
-                request.Status = "Failed";
-                request.Details = ex.InnerException?.Message ?? ex.Message;
-                request.Meaning = "The request could not be completed.";
-            }
-
-            var certificate = new CheckResult { Check = "Security certificate" };
-            if (issuer == null)
-            {
-                certificate.Status = "Info";
-                certificate.Details = "Not checked (no secure connection was made)";
-                certificate.Meaning = "";
-            }
-            else if (certErrors != SslPolicyErrors.None)
-            {
-                certificate.Status = "Failed";
-                certificate.Details = "Issuer: " + issuer + " (" + certErrors + ")";
-                certificate.Meaning = "The certificate is not trusted. Usually corporate SSL inspection.";
-            }
-            else if (issuer.IndexOf("Google", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     issuer.IndexOf("GTS", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                certificate.Status = "OK";
-                certificate.Details = "Issuer: " + issuer;
-                certificate.Meaning = "Genuine Google certificate. Traffic is not being inspected.";
+                request.Status = "Info";
+                request.Details = "Not checked (server not reachable)";
+                request.Meaning = "";
             }
             else
             {
-                certificate.Status = "Warning";
-                certificate.Details = "Issuer: " + issuer;
-                certificate.Meaning = "The company inspects encrypted traffic (SSL inspection). It works, but IT can see the text.";
+                var target = supported.Contains("fr") ? "fr" : supported.FirstOrDefault(c => c != "en") ?? "en";
+                var result = await service.TranslateAsync("Hello, how are you?", target);
+                request.Status = result.Success ? "OK" : "Failed";
+                request.Details = result.Success ? $"'Hello, how are you?' -> '{result.TranslatedText}'" : result.Error;
+                request.Meaning = result.Success ? "Translation works through the app's own code."
+                    : result.Error.Contains("403") ? "Wrong or missing API key." : "The server rejected the request.";
+            }
+            results.Add(request);
+
+            var failed = results.Any(r => r.Status == "Failed");
+            results.Add(new CheckResult
+            {
+                Check = "Overall",
+                Status = request.Status != "OK" ? "Failed" : failed ? "Warning" : "OK",
+                Details = request.Status != "OK" ? "Translation is not available."
+                    : failed ? $"Translation works, but some workers failed their test ({service.Workers} healthy worker(s) used)."
+                    : $"LibreTranslate is ready ({service.Workers} worker(s), {service.Parallel} parallel requests).",
+                Meaning = ""
+            });
+            return results;
+        }
+
+        /// <summary>
+        /// GET /lb/health, then GET /lb/selftest: one row per backend with the checks that failed.
+        /// A plain LibreTranslate server (no /lb routes) gets one Info row.
+        /// </summary>
+        private static async Task<List<CheckResult>> LoadBalancerAsync(string baseUrl, string apiKey)
+        {
+            var rows = new List<CheckResult>();
+            var url = baseUrl.TrimEnd('/');
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(3) }; // selftest waits for busy workers
+
+            JsonDocument health;
+            try
+            {
+                using var response = await http.GetAsync(url + "/lb/health");
+                health = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                if (!health.RootElement.TryGetProperty("healthy", out _)) throw new JsonException("not the load balancer");
+            }
+            catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException || ex is JsonException)
+            {
+                rows.Add(new CheckResult
+                {
+                    Check = "Load balancer",
+                    Status = "Info",
+                    Details = "Not detected (single LibreTranslate server, or an older load balancer without /lb/health)",
+                    Meaning = "For more speed, run LibreTranslateServer\\start.cmd with \"workers\" set in config.json."
+                });
+                return rows;
             }
 
-            return new[] { certificate, request };
+            using (health)
+            {
+                var h = health.RootElement;
+                var healthy = h.GetProperty("healthy").GetInt32();
+                var total = h.GetProperty("total").GetInt32();
+                rows.Add(new CheckResult
+                {
+                    Check = "Load balancer (/lb/health)",
+                    Status = healthy == total ? "OK" : healthy > 0 ? "Warning" : "Failed",
+                    Details = $"{h.GetProperty("status").GetString()}: {healthy} of {total} backend(s) healthy",
+                    Meaning = "Requests are spread over the healthy backends (fewest active requests first)."
+                });
+            }
+
+            try
+            {
+                var query = string.IsNullOrWhiteSpace(apiKey) ? "" : "?api_key=" + Uri.EscapeDataString(apiKey.Trim());
+                using var response = await http.GetAsync(url + "/lb/selftest" + query);
+                using var report = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                var r = report.RootElement;
+                rows.Add(new CheckResult
+                {
+                    Check = "Worker self-test (/lb/selftest)",
+                    Status = r.GetProperty("passed").GetBoolean() ? "OK" : "Failed",
+                    Details = $"{r.GetProperty("backends_passed").GetInt32()} of {r.GetProperty("backends_total").GetInt32()} backend(s) passed in {r.GetProperty("ms").GetInt32()} ms",
+                    Meaning = "Every worker tested directly: languages, detection of one sample per language, one translation."
+                });
+
+                foreach (var backend in r.GetProperty("backends").EnumerateArray())
+                {
+                    var checks = backend.GetProperty("checks").EnumerateArray().ToList();
+                    var failedChecks = checks.Where(c => !c.GetProperty("passed").GetBoolean())
+                        .Select(c => $"{c.GetProperty("check").GetString()}: {c.GetProperty("details").GetString()}").ToList();
+                    var passed = backend.GetProperty("passed").GetBoolean();
+                    rows.Add(new CheckResult
+                    {
+                        Check = (backend.GetProperty("local").GetBoolean() ? "  Worker " : "  Remote ") + backend.GetProperty("url").GetString(),
+                        Status = passed ? "OK" : "Failed",
+                        Details = passed
+                            ? $"{checks.Count} checks passed ({string.Join(", ", checks.Select(c => c.GetProperty("check").GetString()))})"
+                            : string.Join("; ", failedChecks),
+                        Meaning = passed ? "" : "Down, still loading models, or wrong results: it gets no requests while it is unhealthy. See LibreTranslateServer\\logs."
+                    });
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException || ex is JsonException ||
+                                       ex is KeyNotFoundException || ex is InvalidOperationException)
+            {
+                rows.Add(new CheckResult { Check = "Worker self-test (/lb/selftest)", Status = "Warning", Details = ex.Message, Meaning = "The self-test route did not answer." });
+            }
+            return rows;
         }
     }
 }

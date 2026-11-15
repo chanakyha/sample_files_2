@@ -1,0 +1,7 @@
+# Python virtual environment and runtime files (recreate with setup.ps1)
+.venv/
+__pycache__/
+*.pyc
+server.log
+logs/
+db/

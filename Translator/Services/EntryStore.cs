@@ -43,6 +43,22 @@ namespace Translator.Services
             return entry;
         }
 
+        public List<TextEntry> AddRange(IEnumerable<string> texts)
+        {
+            var entries = texts
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => t.Trim())
+                .Select(t => new TextEntry { Text = t, Kind = Classify(t) })
+                .ToList();
+            lock (_lock) _entries.AddRange(entries);
+            return entries;
+        }
+
+        public void Clear()
+        {
+            lock (_lock) _entries.Clear();
+        }
+
         public bool Remove(Guid id)
         {
             lock (_lock) return _entries.RemoveAll(e => e.Id == id) > 0;

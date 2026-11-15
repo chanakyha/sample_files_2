@@ -11,10 +11,12 @@ namespace Translator
         private readonly DataGridView _grid;
         private readonly Button _runButton;
         private readonly Label _statusLabel;
+        private readonly AppSettings _settings;
 
-        public ConnectionCheckForm()
+        public ConnectionCheckForm(AppSettings settings)
         {
-            Text = "Check Connection";
+            _settings = settings;
+            Text = "Check Connection - LibreTranslate";
             Width = 1000;
             Height = 450;
             StartPosition = FormStartPosition.CenterParent;
@@ -61,14 +63,14 @@ namespace Translator
 
         private async Task RunChecksAsync()
         {
+            // No wait cursor: the dialog stays responsive and the label shows progress
             _runButton.Enabled = false;
-            UseWaitCursor = true;
             _statusLabel.Text = "Running checks...";
             _grid.Rows.Clear();
 
             try
             {
-                var results = await ConnectionChecker.RunAsync();
+                var results = await ConnectionChecker.RunAsync(_settings.LibreTranslateUrl, _settings.LibreTranslateApiKey);
                 foreach (var r in results)
                     _grid.Rows.Add(r.Check, r.Status, r.Details, r.Meaning);
 
@@ -80,7 +82,6 @@ namespace Translator
             }
             finally
             {
-                UseWaitCursor = false;
                 _runButton.Enabled = true;
             }
         }
