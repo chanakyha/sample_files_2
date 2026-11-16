@@ -71,7 +71,7 @@ Needs **Python 3.10 - 3.13**. If you don't have it: `winget install -e --id Pyth
 Then double-click **`setup.cmd`** (or `powershell -ExecutionPolicy Bypass -File setup.ps1`, with
 `-Proxy http://proxy:port` to override `config.json`). It installs the packages into `.venv`
 (about 1 GB, including PyTorch, which Argos Translate depends on) and downloads the models for the
-languages in `config.json` into `models\` (about 2-3 minutes for en, fr, es, de, it, pt), then
+languages in `config.json` into `models\` (about 1 minute for en, fr, es), then
 translates "Good morning" into every language as a check.
 
 Models later:
@@ -81,7 +81,12 @@ install_models.cmd                       # the languages in config.json (only do
 install_models.cmd --languages en,nl,pl  # other languages
 install_models.cmd --list                # what is installed (offline)
 install_models.cmd --remove              # delete all models
+install_models.cmd --remove-others       # delete models of languages no longer in config.json
 ```
+
+To change the languages: edit `languages` in `config.json` (now `en,fr,es`), run `install_models.cmd`
+(adds missing ones) and/or `install_models.cmd --remove-others`, then restart the server. The app's
+Translate menu greys out languages the server does not offer.
 
 For every language, the models from and to English are installed (plus direct pairs between
 listed languages where they exist); other pairs are translated through English.
@@ -122,7 +127,7 @@ Translation routes (forwarded to a worker):
 | Route | Body | Answer |
 |---|---|---|
 | `GET /languages` | | `[{"code": "en", "name": "English", "targets": [...]}, ...]` |
-| `POST /detect` | `{"q": "Gracias"}` | `[{"language": "es", "confidence": 70.4}, {"language": "pt", ...}]` best first, 0-100 |
+| `POST /detect` | `{"q": "Gracias"}` | `[{"language": "es", "confidence": 95.1}, {"language": "en", ...}]` best first, 0-100 |
 | `POST /translate` | `{"q": "text" or ["a", "b"], "source": "en" or "auto", "target": "fr"}` | `{"translatedText": ..., "detectedLanguage": ...}` (`detectedLanguage` only with `auto`) |
 
 With `"source": "auto"` every text is detected on its own, so one batch may mix languages.
@@ -153,7 +158,7 @@ Ways to test:
 - **Translation:** Argos Translate (OpenNMT models run with CTranslate2 on the CPU). Sentences are
   split with MiniSBD (small ONNX models, downloaded by setup), so translating never goes online.
 - **Language detection:** Lingua, limited to the installed languages. It is accurate on sentences
-  and honest on single words: "Ciao" gives Italian 38% with Portuguese 32% next. The Translator
+  and honest on single words: "Merci" gives Spanish 48% with French 33% next. The Translator
   app double-checks short, unsure texts with a round trip (candidate → English → back).
 - **Load balancer:** least connections; health checks every 3 s (down after 2 failures); warm-up
   before traffic; failover on connection errors and HTTP 5xx; crashed workers are restarted;

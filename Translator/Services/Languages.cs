@@ -9,34 +9,14 @@ namespace Translator.Services
     {
         public const string Default = "en";
 
-        // The 24 target languages offered in the "Translate" menu (ISO codes; mapped to the server's codes by ArgosTranslateService)
+        // The target languages offered in the "Translate" menu (ISO codes; mapped to the server's codes by
+        // ArgosTranslateService). Must match "languages" in ArgosTranslateServer\config.json.
         public static readonly IReadOnlyDictionary<string, string> Targets =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["en"] = "English",
                 ["fr"] = "French",
-                ["es"] = "Spanish",
-                ["de"] = "German",
-                ["it"] = "Italian",
-                ["pt"] = "Portuguese",
-                ["nl"] = "Dutch",
-                ["ru"] = "Russian",
-                ["zh-CN"] = "Chinese (Simplified)",
-                ["ja"] = "Japanese",
-                ["ko"] = "Korean",
-                ["ar"] = "Arabic",
-                ["hi"] = "Hindi",
-                ["ta"] = "Tamil",
-                ["bn"] = "Bengali",
-                ["tr"] = "Turkish",
-                ["pl"] = "Polish",
-                ["sv"] = "Swedish",
-                ["el"] = "Greek",
-                ["he"] = "Hebrew",
-                ["th"] = "Thai",
-                ["vi"] = "Vietnamese",
-                ["id"] = "Indonesian",
-                ["uk"] = "Ukrainian"
+                ["es"] = "Spanish"
             };
 
         // Legacy codes the translation service may return when detecting a language

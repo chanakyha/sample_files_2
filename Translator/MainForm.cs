@@ -64,7 +64,7 @@ namespace Translator
             fileMenu.MouseHover += (s, e) => fileMenu.ShowDropDown();
             _menu.Items.Add(fileMenu);
 
-            // Nav: "Translate" menu that opens on hover and lists all 24 languages
+            // Nav: "Translate" menu that opens on hover and lists the languages in Languages.Targets
             _translateMenu = new ToolStripMenuItem("Translate");
             foreach (var lang in Languages.Targets)
             {

@@ -1,7 +1,7 @@
 # Translator (.NET 5 Windows Forms + Argos Translate)
 
 A Windows desktop translation app built with standard WinForms controls. It detects the language
-of each text automatically and translates it into one of 24 languages using a self-hosted
+of each text automatically and translates it between English, French and Spanish using a self-hosted
 **Argos Translate** server: free, open source, no usage limits, works offline, and the text never
 leaves your network. A **load balancer** runs several workers in parallel for large data sets.
 
@@ -17,7 +17,8 @@ Translator app ──> load balancer :5000 ──┬──> worker :5001 (Argos 
   "From → To" languages.
 - **File**: import large data sets (TXT: one text per line; CSV: column `text` or the first column),
   export results to CSV, clear items, clear the translation cache, reconnect to the server.
-- **Translate** (opens on hover): 24 target languages; languages without models on the server are greyed out.
+- **Translate** (opens on hover): the target languages; those without models on the server are greyed out.
+  The server offers English, French and Spanish (`languages` in `ArgosTranslateServer\config.json`).
 - **Settings**: server address and parallel requests (client settings only).
 - **Check Connection**: server, load balancer health, a self-test of every worker, and a test translation.
 - **Show**: switch the table between translated and original text.
@@ -63,7 +64,8 @@ settings, API, test routes, more languages, sharing it on the network, and addin
 | **Cache** | `%LocalAppData%\Translator\translation-cache-argos.json`: a text is never translated twice for the same language |
 | **Retries** | Busy or failing servers (HTTP 429/5xx) are retried with increasing waits |
 
-Measured on a laptop (4 cores, 16 GB) with 2 workers: 200 sentences in 37 s (about 5 texts/s).
+Measured on a laptop (4 cores, 16 GB) with 1 worker and English/French/Spanish: 200 sentences in
+25 s (about 8 texts/s).
 Rule of thumb for workers: logical CPUs ÷ 4. More workers than CPU cores does not help on one
 machine; add machines instead.
 
@@ -73,8 +75,10 @@ Each text is detected separately (`/detect`, Lingua), then texts are translated 
 by language. Single words are ambiguous for any detector ("Merci", "Hello", "Car"), so short texts
 (up to 3 words) with a confidence below 90% are double-checked: for each candidate language
 (the detector's ranking first) the text is translated to English and back (English is checked via
-French). The language that gives back the original text wins. The tooltip shows when a language
-was corrected, or when it stayed uncertain.
+French). The language that gives back the original text wins. If none does (a synonym comes back:
+"merci" → "thank you" → "je vous remercie"), the only language whose model translates the word at
+all wins (models copy words they don't know). The tooltip shows when a language was corrected, or
+when it stayed uncertain. Test result: 21 of 21 single words right.
 
 ## Testing
 

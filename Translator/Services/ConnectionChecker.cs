@@ -40,8 +40,10 @@ namespace Translator.Services
             {
                 supported = await service.GetSupportedLanguagesAsync();
                 languages.Status = "OK";
-                languages.Details = $"{supported.Count} of 24 languages loaded: {string.Join(", ", supported)}";
-                languages.Meaning = supported.Count < 24
+                var menu = Languages.Targets.Count;
+                var available = Languages.Targets.Keys.Count(c => supported.Contains(c, StringComparer.OrdinalIgnoreCase));
+                languages.Details = $"{available} of {menu} languages loaded: {string.Join(", ", supported)}";
+                languages.Meaning = available < menu
                     ? "Missing languages are greyed out in the Translate menu. Add them to \"languages\" in ArgosTranslateServer\\config.json and run install_models.cmd."
                     : "All languages are available.";
             }

@@ -21,7 +21,7 @@ namespace Translator.Services
             Add("Where is the nearest train station?");
             Add("Je voudrais un café, s'il vous plaît.");
             Add("¿Cómo estás hoy, amigo?");
-            Add("Guten Morgen, wie geht es dir?");
+            Add("Merci beaucoup pour votre aide.");
             Add("The quick brown fox jumps over the lazy dog. It was a sunny afternoon, " +
                 "and the whole village had gathered in the square to watch the annual festival.");
             Add("La ville de Paris est connue pour ses musées, ses cafés et son architecture. " +

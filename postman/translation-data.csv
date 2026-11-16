@@ -1,14 +1,10 @@
 text,tl,expectedLang,expectedContains
 Where is the nearest train station?,fr,en,gare
 Where is the nearest train station?,es,en,estación
-Where is the nearest train station?,de,en,
-Where is the nearest train station?,it,en,
-Where is the nearest train station?,pt,en,
 Je voudrais un café,en,fr,coffee
 Je voudrais un café,es,fr,café
 ¿Cómo estás hoy?,en,es,how are you
 El mercado abre temprano por la mañana.,en,es,market
-Guten Morgen,en,de,good morning
 Le voyant moteur s'allume lorsque la batterie est faible.,en,fr,battery
 Please submit the quarterly report by Friday.,fr,en,rapport
 The technician inspects the vehicle before delivery.,es,en,vehículo

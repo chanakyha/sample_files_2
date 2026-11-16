@@ -22,7 +22,7 @@ DEFAULTS = {
     "port": 5000,
     "workers": 2,
     "worker_base_port": 0,        # 0 = port + 1
-    "languages": "en,fr,es,de,it,pt",
+    "languages": "en,fr,es",
     "threads_per_worker": 0,      # 0 = split the CPU cores evenly
     "backends": [],               # other translation servers, e.g. ["http://server2:5000"]
     "proxy": "",                  # for downloads only, e.g. "http://proxy.company.com:8080"

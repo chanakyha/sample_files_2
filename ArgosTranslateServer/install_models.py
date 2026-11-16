@@ -6,6 +6,7 @@ Usage:
     .venv\\Scripts\\python install_models.py --proxy http://proxy.company.com:8080
     .venv\\Scripts\\python install_models.py --list              what is installed (offline)
     .venv\\Scripts\\python install_models.py --remove            delete all installed models
+    .venv\\Scripts\\python install_models.py --remove-others     delete models of languages not in the list
 
 Downloads (run check_network.py first on a corporate network):
     https://raw.githubusercontent.com/argosopentech/argospm-index/main/index.json   model list
@@ -46,6 +47,8 @@ def main():
     parser.add_argument("--proxy", default=config["proxy"], help="proxy for the downloads")
     parser.add_argument("--list", action="store_true", help="show the installed models and exit")
     parser.add_argument("--remove", action="store_true", help="delete all installed models and exit")
+    parser.add_argument("--remove-others", action="store_true",
+                        help="delete the models of languages that are not in the list and exit (offline)")
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -66,6 +69,11 @@ def main():
         return show_installed(package, minisbd_models)
 
     wanted = common.language_codes(args.languages)
+    if args.remove_others:
+        if wanted is None:
+            print('Nothing to remove: languages is "all".')
+            return 0
+        return remove_others(wanted, package, minisbd_models)
     print(f"Models folder: {common.argos_data_dir()}")
     print(f"Languages: {', '.join(wanted) if wanted else 'all'}" + (f"   proxy: {args.proxy}" if args.proxy else ""))
 
@@ -148,6 +156,24 @@ def sbd_code(code, minisbd_models):
     from argostranslate.sbd import MiniSBDSentencizer
     mapped = MiniSBDSentencizer.LANGUAGE_CODE_MAPPING.get(code, code)
     return mapped if mapped in minisbd_models.list_models() else "en"
+
+
+def remove_others(wanted, package, minisbd_models):
+    """Deletes the translation and sentence splitting models of languages outside the list."""
+    removed = 0
+    for p in sorted(package.get_installed_packages(), key=lambda p: (p.from_code, p.to_code)):
+        if p.from_code not in wanted or p.to_code not in wanted:
+            package.uninstall(p)
+            removed += 1
+            print(f"removed {p.from_code} -> {p.to_code}")
+    keep = {sbd_code(c, minisbd_models) for c in wanted} | {"en"}
+    sbd_dir = minisbd_models.cache_dir
+    for f in sorted(os.listdir(sbd_dir)) if os.path.isdir(sbd_dir) else []:
+        if f.endswith(".onnx") and f[:-5] not in keep:
+            os.remove(os.path.join(sbd_dir, f))
+            print(f"removed sentence splitting {f[:-5]}")
+    print(f"Removed {removed} translation models; kept: {', '.join(wanted)}")
+    return show_installed(package, minisbd_models)
 
 
 def show_installed(package, minisbd_models):

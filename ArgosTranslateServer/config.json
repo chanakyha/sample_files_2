@@ -4,7 +4,7 @@
   "port": 5000,
   "workers": 1,
   "worker_base_port": 0,
-  "languages": "en,fr,es,de,it,pt",
+  "languages": "en,fr,es",
   "threads_per_worker": 0,
   "backends": [],
   "proxy": "",

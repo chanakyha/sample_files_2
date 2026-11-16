@@ -242,43 +242,6 @@
           }
         },
         {
-          "name": "Detect German",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('Detected German', () => pm.expect(pm.response.json()[0].language).to.eql('de'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{ \"q\": \"Guten Morgen, wie geht es dir?\" }"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/detect",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "detect"
-              ]
-            }
-          }
-        },
-        {
           "name": "Detect short word (Gracias)",
           "event": [
             {
@@ -316,7 +279,7 @@
           }
         },
         {
-          "name": "Detect short word (Ciao) - Italian, low confidence, app verifies it",
+          "name": "Detect short word (Merci) - unsure, app verifies it",
           "event": [
             {
               "listen": "test",
@@ -325,11 +288,10 @@
                 "exec": [
                   "pm.test('Status 200', () => pm.response.to.have.status(200));",
                   "const r = pm.response.json();",
-                  "// Single words are ambiguous: the detector is right but unsure, and lists the next candidates.",
+                  "// Single words are ambiguous: the detector is unsure and lists the candidates.",
                   "// The app checks short, unsure texts with a round trip (candidate -> English -> back).",
-                  "pm.test('Detected Italian', () => pm.expect(r[0].language).to.eql('it'));",
                   "pm.test('Confidence below 90 (app will verify)', () => pm.expect(r[0].confidence).to.be.below(90));",
-                  "pm.test('Next candidates listed', () => pm.expect(r.length).to.be.at.least(2));"
+                  "pm.test('French among the candidates', () => pm.expect(r.map(d => d.language)).to.include('fr'));"
                 ]
               }
             }
@@ -344,7 +306,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{ \"q\": \"Ciao\" }"
+              "raw": "{ \"q\": \"Merci\" }"
             },
             "url": {
               "raw": "{{baseUrl}}/detect",
@@ -544,7 +506,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{ \"q\": [\"Je voudrais un café.\", \"Where is the station?\", \"El mercado abre temprano.\"], \"source\": \"auto\", \"target\": \"it\", \"format\": \"text\" }"
+              "raw": "{ \"q\": [\"Je voudrais un café.\", \"Where is the station?\", \"El mercado abre temprano.\"], \"source\": \"auto\", \"target\": \"en\", \"format\": \"text\" }"
             },
             "url": {
               "raw": "{{baseUrl}}/translate",
@@ -581,7 +543,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{ \"q\": \"Please submit the quarterly report to the supply chain team by Friday.\", \"source\": \"en\", \"target\": \"de\", \"format\": \"text\" }"
+              "raw": "{ \"q\": \"Please submit the quarterly report to the supply chain team by Friday.\", \"source\": \"en\", \"target\": \"es\", \"format\": \"text\" }"
             },
             "url": {
               "raw": "{{baseUrl}}/translate",

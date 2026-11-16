@@ -227,11 +227,18 @@ namespace Translator.Services
         /// its texts are translated candidate→pivot in one batch and back in one batch (pivot is
         /// English, or French when the candidate is English). A text that changes on the way out and
         /// comes back as itself is in that language. Stops when every text is resolved.
+        /// Texts are checked in lower case: models keep a capitalised single word on the way back as
+        /// if it were a name ("Coche" -> "Car" -> "Car", but "coche" -> "car" -> "coche").
+        /// When no round trip comes back exactly (a synonym: "merci" -> "thank you" -> "je vous
+        /// remercie") but only one of the tried languages translates the text at all (the others
+        /// copy it unchanged, as models do with unknown words), the text is in that language.
         /// </summary>
         private async Task<Dictionary<string, string>> VerifyLanguagesAsync(Dictionary<string, List<string>> candidates, Run run, CancellationToken ct)
         {
             var verified = new Dictionary<string, string>();
             var pending = candidates.Keys.ToList();
+            var probes = pending.ToDictionary(t => t, t => t.ToLowerInvariant());
+            var knownBy = pending.ToDictionary(t => t, t => new List<string>()); // languages that translate it
 
             for (var round = 0; pending.Count > 0 && round < MaxCandidatesPerText; round++)
             {
@@ -247,11 +254,17 @@ namespace Translator.Services
                     if (pivot == null) continue;
                     run.Report($"Verifying language of {pending.Count} short text(s): trying {Languages.GetName(candidate)}...");
 
+                    var outputs = new Dictionary<string, string>();
+                    await ForEachBatchAsync(group.Select(t => probes[t]).Distinct().ToList(), candidate, pivot, null, ct,
+                        (probe, item) => outputs[probe] = item.Text).ConfigureAwait(false);
+
                     var forward = new List<(string Text, string Out)>();
-                    await ForEachBatchAsync(group.ToList(), candidate, pivot, null, ct, (text, item) =>
+                    foreach (var text in group)
                     {
-                        if (!Same(item.Text, text)) forward.Add((text, item.Text)); // unchanged proves nothing
-                    }).ConfigureAwait(false);
+                        if (!outputs.TryGetValue(probes[text], out var outText) || Same(outText, text)) continue; // unchanged proves nothing
+                        forward.Add((text, outText));
+                        knownBy[text].Add(candidate);
+                    }
                     if (forward.Count == 0) continue;
 
                     var back = new Dictionary<string, string>();
@@ -267,6 +280,12 @@ namespace Translator.Services
                         }
                     }
                 }
+            }
+
+            // Every candidate was tried for the texts still pending: use "only one language knows it"
+            foreach (var text in pending)
+            {
+                if (knownBy[text].Count == 1) verified[text] = knownBy[text][0];
             }
             return verified;
         }
