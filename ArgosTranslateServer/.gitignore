@@ -1,0 +1,7 @@
+# Python virtual environment, language models and runtime files (recreate with setup.cmd)
+.venv/
+__pycache__/
+*.pyc
+server.log
+logs/
+models/

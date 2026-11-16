@@ -1,3 +1,0 @@
-# LibreTranslate server (self-hosted, open source, AGPL-3.0)
-# Supported Python versions: 3.8 - 3.13 (3.14 is not supported yet)
-libretranslate==1.9.6

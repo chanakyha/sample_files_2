@@ -1,13 +1,13 @@
-"""Route test for the LibreTranslate load balancer (standard library only).
+"""Route test for the Argos Translate server / load balancer (standard library only).
 
 Usage:
-    .venv\\Scripts\\python check_server.py [http://127.0.0.1:5000] [--api-key KEY]
+    .venv\\Scripts\\python check_server.py [http://127.0.0.1:5000]
 
 Tests every route a client uses, through the load balancer, and prints PASS / FAIL per test.
 Exit code 0 = all passed, 1 = something failed (usable in scripts and CI).
 
   load balancer routes   GET /lb/health, GET /lb/status, GET /lb/selftest (every worker directly)
-  LibreTranslate routes  GET /languages, POST /detect, POST /translate (single, batch, mixed
+  translation routes    GET /languages, POST /detect, POST /translate (single, batch, mixed
                          languages, already-target), error handling (missing text, bad language)
   load                   40 parallel requests: all succeed and are spread over the workers
 """
@@ -19,11 +19,6 @@ import urllib.error
 import urllib.request
 
 args = [a for a in sys.argv[1:]]
-API_KEY = None
-if "--api-key" in args:
-    i = args.index("--api-key")
-    API_KEY = args[i + 1]
-    del args[i:i + 2]
 URL = (args[0] if args else "http://127.0.0.1:5000").rstrip("/")
 
 results = []
@@ -31,8 +26,6 @@ results = []
 
 def call(method, path, payload=None, timeout=300):
     """Returns (HTTP status, parsed JSON or text). Never raises for HTTP errors."""
-    if payload is not None and API_KEY:
-        payload = dict(payload, api_key=API_KEY)
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(URL + path, data=data, method=method,
                                      headers={"Content-Type": "application/json"} if data else {})
@@ -73,8 +66,7 @@ def main():
         test("GET /lb/status", status == 200 and len(lb.get("backends", [])) == lb.get("total"),
              f"pid {lb.get('pid')}, started {lb.get('started')}, {lb.get('total')} backend(s)")
 
-        query = f"?api_key={API_KEY}" if API_KEY else ""
-        status, report = call("GET", "/lb/selftest" + query)
+        status, report = call("GET", "/lb/selftest")
         test("GET /lb/selftest", status == 200 and report.get("passed"),
              f"{report.get('backends_passed')} of {report.get('backends_total')} backend(s) passed in {report.get('ms')} ms")
         for backend in report.get("backends", []):
@@ -82,9 +74,9 @@ def main():
             print(f"        {'ok  ' if backend['passed'] else 'FAIL'} {backend['url']}: {len(backend['checks'])} checks"
                   + "".join(f"\n             {c['check']}: {c['details']}" for c in failed))
     else:
-        print("INFO  /lb routes not found: a single LibreTranslate server, not the load balancer")
+        print("INFO  /lb routes not found: a single worker (worker.py), not the load balancer")
 
-    # --- LibreTranslate routes, through the load balancer ------------------------------------
+    # --- Translation routes, through the load balancer ---------------------------------------
     status, languages = call("GET", "/languages")
     codes = [l["code"] for l in languages] if status == 200 else []
     test("GET /languages", codes, f"{len(codes)} loaded: {', '.join(codes)}")

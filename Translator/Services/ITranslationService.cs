@@ -15,7 +15,7 @@ namespace Translator.Services
 
     public interface ITranslationService
     {
-        /// <summary>Display name, e.g. "LibreTranslate".</summary>
+        /// <summary>Display name, e.g. "Argos Translate".</summary>
         string Name { get; }
 
         /// <summary>Target languages available (app codes), or null when all are available.</summary>

@@ -15,7 +15,7 @@ namespace Translator
     {
         private readonly EntryStore _store = new EntryStore();
         private readonly AppSettings _settings = AppSettings.Load();
-        private LibreTranslateService _translator;
+        private ArgosTranslateService _translator;
 
         private string _targetLanguage = Languages.Default;
         private bool _showOriginal;
@@ -41,7 +41,7 @@ namespace Translator
             BuildUi();
             Load += async (s, e) => await ConnectAsync();
             FormClosing += (s, e) => _cts?.Cancel();
-            // The LibreTranslate server is run separately (LibreTranslateServer\start.cmd / stop.cmd):
+            // The Argos Translate server is run separately (ArgosTranslateServer\start.cmd / stop.cmd):
             // the app only sends requests to it and never starts, stops or configures it
         }
 
@@ -75,7 +75,7 @@ namespace Translator
             _translateMenu.MouseHover += (s, e) => _translateMenu.ShowDropDown();
             _menu.Items.Add(_translateMenu);
 
-            // Nav: LibreTranslate server settings (address, local server, workers)
+            // Nav: server settings (address, parallel requests)
             var settingsItem = new ToolStripMenuItem("Settings");
             settingsItem.Click += async (s, e) => await EditSettingsAsync();
             _menu.Items.Add(settingsItem);
@@ -191,17 +191,17 @@ namespace Translator
 
         /// <summary>
         /// (Re)connects to the server: reads its languages and workers, then translates the list.
-        /// The server runs separately (LibreTranslateServer\start.cmd); the app only connects to it.
+        /// The server runs separately (ArgosTranslateServer\start.cmd); the app only connects to it.
         /// </summary>
         private async Task ConnectAsync()
         {
             CreateTranslator();
-            _statusLabel.Text = "Connecting to " + _settings.LibreTranslateUrl + "...";
+            _statusLabel.Text = "Connecting to " + _settings.ServerUrl + "...";
             if (!await IsServerReachableAsync())
             {
                 UpdateTitle();
-                _statusLabel.Text = $"LibreTranslate is not reachable at {_settings.LibreTranslateUrl}. " +
-                                    @"Start it with LibreTranslateServer\start.cmd, then use File > Reconnect.";
+                _statusLabel.Text = $"The translation server is not reachable at {_settings.ServerUrl}. " +
+                                    @"Start it with ArgosTranslateServer\start.cmd, then use File > Reconnect.";
                 return;
             }
             await UpdateLanguageMenuAsync();
@@ -226,14 +226,14 @@ namespace Translator
 
         private async Task EditSettingsAsync()
         {
-            using var form = new LibreTranslateSettingsForm(_settings);
+            using var form = new ServerSettingsForm(_settings);
             if (form.ShowDialog(this) != DialogResult.OK) return;
 
             _settings.Save();
             await ConnectAsync();
         }
 
-        /// <summary>Greys out languages the current service does not have (e.g. not installed on the LibreTranslate server).</summary>
+        /// <summary>Greys out languages the current service does not have (e.g. no model installed on the server).</summary>
         private async Task UpdateLanguageMenuAsync()
         {
             IReadOnlyCollection<string> supported = null;

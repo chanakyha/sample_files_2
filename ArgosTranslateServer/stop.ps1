@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Stops the LibreTranslate load balancer (and with it all its workers), however it was started.
+    Stops the Argos Translate load balancer (and with it all its workers), however it was started.
 
     -Port defaults to the port in config.json.
 

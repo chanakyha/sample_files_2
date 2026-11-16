@@ -1,0 +1,4 @@
+# Argos Translate: offline neural machine translation (https://github.com/argosopentech/argos-translate)
+argostranslate==1.11.0
+# Language detection, accurate on short texts (https://github.com/pemistahl/lingua-py)
+lingua-language-detector==2.2.0

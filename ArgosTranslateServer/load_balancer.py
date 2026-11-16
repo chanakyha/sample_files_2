@@ -1,29 +1,28 @@
-"""Load balancer for LibreTranslate (Python standard library only).
+"""Load balancer for the Argos Translate workers (Python standard library only).
 
-Starts N LibreTranslate worker processes and distributes requests between them, so large
-data sets are translated in parallel. Clients (the Translator app, Postman, ...) only talk to
-the load balancer, which behaves like a single LibreTranslate server.
+Starts N worker processes (worker.py, Argos Translate) and distributes requests between them, so
+large data sets are translated in parallel. Clients (the Translator app, Postman, ...) only talk
+to the load balancer, which behaves like a single translation server.
 
-    client ──> load balancer :5000 ──┬──> worker :5001  (LibreTranslate)
-                                     ├──> worker :5002  (LibreTranslate)
-                                     └──> remote server (optional, --backends)
+    client ──> load balancer :5000 ──┬──> worker :5001  (worker.py, Argos Translate)
+                                     ├──> worker :5002  (worker.py, Argos Translate)
+                                     └──> other server (optional, "backends")
 
-Why several workers: one LibreTranslate process translates one request at a time per language
-model and uses all CPU cores for it. Several workers, each with a share of the cores, keep the
-CPU busy with many requests at once. Remote backends (other PCs/servers running LibreTranslate)
-add capacity beyond one machine.
+Why several workers: one worker translates one request at a time per language model and uses
+its share of the CPU cores for it. Several workers keep the CPU busy with many requests at once.
+Other servers running this folder ("backends") add capacity beyond one machine.
 
 Features
 - least-connections balancing (the healthy backend with the fewest active requests)
 - health checks every few seconds; unhealthy backends get no traffic until they recover
-- warm-up: each worker gets one detection request before any traffic (LibreTranslate's detector
-  gives wrong results when its first requests arrive in parallel)
+- warm-up: each worker gets one detection request before any traffic
 - failover: a request that fails because a backend is down, or that a backend answers with a
   server error (5xx, e.g. out of memory), is retried on another backend
 - crashed local workers are restarted automatically
 - runs on its own, independent of any client: it is started with start.cmd / start.ps1 and
   stopped with stop.cmd / Ctrl+C. Clients (the Translator app, Postman) only send requests to it
   and never start, stop or configure it.
+- works offline: the workers only use the models installed by install_models.py
 
 Settings: config.json in this folder (port, workers, languages, ...). Command-line options
 override it for one run.
@@ -33,7 +32,7 @@ Test routes (handled by the load balancer itself, not forwarded):
 - GET /lb/status    every backend with its counters (active, served, errors, restarts)
 - GET /lb/selftest  runs a real test on EVERY backend directly (languages, detection of a sample
                     per loaded language, one translation) and reports per backend what passed:
-                    200 when all backends pass, 503 when any fails. Optional ?api_key=...
+                    200 when all backends pass, 503 when any fails
 
 Usage (normally via start.ps1):
     python load_balancer.py                       (settings from config.json)
@@ -51,23 +50,13 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-LIBRETRANSLATE_EXE = os.path.join(HERE, ".venv", "Scripts", "libretranslate.exe")
-LOG_DIR = os.path.join(HERE, "logs")
-CONFIG_FILE = os.path.join(HERE, "config.json")
+import common
 
-# Built-in defaults; config.json overrides them, command-line options override both
-DEFAULTS = {
-    "host": "127.0.0.1",
-    "port": 5000,
-    "workers": 2,
-    "worker_base_port": 0,       # 0 = port + 1
-    "languages": "en,fr,es,de,it,pt",
-    "threads_per_worker": 0,     # 0 = split the CPU cores evenly
-    "backends": [],              # remote LibreTranslate servers, e.g. ["http://server2:5000"]
-    "api_keys": False,
-    "log_file": "server.log",    # relative to this folder; "" = console only
-}
+HERE = common.HERE
+WORKER_SCRIPT = os.path.join(HERE, "worker.py")
+LOG_DIR = os.path.join(HERE, "logs")
+CONFIG_FILE = common.CONFIG_FILE
+DEFAULTS = common.DEFAULTS
 
 # /lb/selftest: one sample per language; detection must return this language
 SELFTEST_SAMPLES = {
@@ -207,7 +196,7 @@ def port_in_use(port):
 
 
 class Backend:
-    """One LibreTranslate server (a local worker process or a remote server)."""
+    """One translation server (a local worker process or a remote server)."""
 
     def __init__(self, url, process_args=None, env=None, log_path=None):
         self.url = url.rstrip("/")
@@ -270,12 +259,8 @@ class Backend:
             self.check_lock.release()
 
     def warm_up(self):
-        """One detection request before the backend gets traffic.
-
-        LibreTranslate's language detector is initialised on first use, and that is not thread-safe:
-        when a fresh worker gets many /detect requests at once, most return "en" with 0% confidence
-        (measured: 1 of 16 correct cold, 16 of 16 after one warm-up request).
-        """
+        """One detection request before the backend gets traffic (loads the detector, and checks
+        that the backend really answers requests, not only /languages)."""
         body = json.dumps({"q": "Bonjour, ceci est un test de démarrage."}).encode("utf-8")
         status = self.request("POST", "/detect", body, {"Content-Type": "application/json"}, timeout=120)
         self.warmed = status == 200
@@ -311,14 +296,13 @@ class Backend:
         except OSError as error:
             return None, str(error), round((time.perf_counter() - started) * 1000)
 
-    def selftest(self, api_key=None):
+    def selftest(self):
         """Real test of this backend, sent to it directly (not through the balancing):
         1. GET /languages
         2. POST /detect for one sample per loaded language: the sample's language must come first
         3. POST /translate for one sample: must return a non-empty text different from the input
         """
         checks = []
-        key = {"api_key": api_key} if api_key else {}
 
         def add(name, passed, ms, details):
             checks.append({"check": name, "passed": bool(passed), "ms": ms, "details": details})
@@ -332,7 +316,7 @@ class Backend:
             for code, text in SELFTEST_SAMPLES.items():
                 if code not in codes:
                     continue
-                status, data, ms = self.call_json("POST", "/detect", dict(q=text, **key))
+                status, data, ms = self.call_json("POST", "/detect", dict(q=text))
                 if status == 200 and isinstance(data, list) and data:
                     got, confidence = data[0].get("language"), data[0].get("confidence")
                     add(f"detect {code}", got == code, ms, f"detected {got} ({confidence}%)")
@@ -345,7 +329,7 @@ class Backend:
             if target and source in SELFTEST_SAMPLES:
                 text = SELFTEST_SAMPLES[source]
                 status, data, ms = self.call_json("POST", "/translate",
-                                                  dict(q=text, source=source, target=target, format="text", **key))
+                                                  dict(q=text, source=source, target=target, format="text"))
                 translated = data.get("translatedText") if status == 200 and isinstance(data, dict) else None
                 add(f"translate {source}->{target}", bool(translated) and translated != text, ms,
                     translated if translated else f"HTTP {status}: {data}")
@@ -440,17 +424,16 @@ def make_handler(pool):
                                             "backends": [b.status() for b in pool.backends],
                                             "healthy": len(pool.healthy()), "total": len(pool.backends)})
             if route == "/lb/selftest":
-                api_key = (urllib.parse.parse_qs(parsed.query).get("api_key") or [None])[0]
-                return self.selftest(api_key)
+                return self.selftest()
             self.forward()
 
-        def selftest(self, api_key):
+        def selftest(self):
             """Tests every backend at the same time and reports per backend which checks passed."""
             started = time.perf_counter()
             results = [None] * len(pool.backends)
 
             def run(i, backend):
-                results[i] = backend.selftest(api_key)
+                results[i] = backend.selftest()
 
             threads = [threading.Thread(target=run, args=(i, b), daemon=True) for i, b in enumerate(pool.backends)]
             for t in threads:
@@ -477,8 +460,8 @@ def make_handler(pool):
             while True:
                 backend = pool.acquire(exclude=tried)
                 if backend is None:
-                    message = "No LibreTranslate worker is available yet (starting or down)." if not tried \
-                        else "All LibreTranslate workers failed for this request."
+                    message = "No translation worker is available yet (starting or down)." if not tried \
+                        else "All translation workers failed for this request."
                     return self.send_body(503, json.dumps({"error": message}).encode("utf-8"), headers=[("Retry-After", "5")])
 
                 tried.append(backend)
@@ -521,11 +504,7 @@ def build_backends(args):
         while port == args.port or port_in_use(port):
             log(f"port {port} is in use, trying {port + 1}")
             port += 1
-        command = [LIBRETRANSLATE_EXE, "--host", "127.0.0.1", "--port", str(port), "--disable-web-ui"]
-        if args.languages and args.languages != "all":
-            command += ["--load-only", args.languages]
-        if args.api_keys:
-            command.append("--api-keys")
+        command = [sys.executable, "-u", WORKER_SCRIPT, "--port", str(port), "--languages", args.languages]
         env = dict(os.environ, ARGOS_INTRA_THREADS=str(intra_threads), ARGOS_INTER_THREADS="1",
                    PYTHONIOENCODING="utf-8")
         backends.append(Backend(f"http://127.0.0.1:{port}", command, env, os.path.join(LOG_DIR, f"worker-{port}.log")))
@@ -540,28 +519,20 @@ def build_backends(args):
 
 def load_settings(argv=None):
     """Settings: built-in DEFAULTS < config.json < command-line options (only those given)."""
-    parser = argparse.ArgumentParser(description="Load balancer for LibreTranslate workers. "
+    parser = argparse.ArgumentParser(description="Load balancer for the Argos Translate workers. "
                                                  "Settings come from config.json; options override them.")
     parser.add_argument("--config", default=CONFIG_FILE, help="settings file (default: config.json in this folder)")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
-    parser.add_argument("--workers", type=int, help="local LibreTranslate worker processes")
+    parser.add_argument("--workers", type=int, help="local worker processes")
     parser.add_argument("--worker-base-port", type=int, help="first worker port (default: port + 1)")
     parser.add_argument("--languages", help='comma-separated codes, or "all"')
     parser.add_argument("--threads-per-worker", type=int, help="CPU threads per worker (0 = split evenly)")
-    parser.add_argument("--backends", help="comma-separated remote LibreTranslate URLs to include")
-    parser.add_argument("--api-keys", action="store_true", default=None, help="start workers with --api-keys")
+    parser.add_argument("--backends", help="comma-separated URLs of other translation servers to include")
     parser.add_argument("--log-file", help='load balancer log file ("" = console only)')
     options = parser.parse_args(argv)
 
-    settings = dict(DEFAULTS)
-    if os.path.exists(options.config):
-        with open(options.config, encoding="utf-8-sig") as f:
-            from_file = json.load(f)
-        unknown = set(from_file) - set(DEFAULTS) - {"comment"}
-        if unknown:
-            raise ValueError(f"{options.config}: unknown setting(s) {', '.join(sorted(unknown))}")
-        settings.update({k: v for k, v in from_file.items() if k in DEFAULTS})
+    settings = common.read_config(options.config)
     for key in DEFAULTS:
         value = getattr(options, key, None)
         if value is not None:
@@ -592,8 +563,8 @@ def main():
     log(f"settings ({args.config if os.path.exists(args.config) else 'defaults'}): port {args.port}, "
         f"{args.workers} worker(s), languages {args.languages}, {len(args.backends)} remote backend(s)")
 
-    if args.workers > 0 and not os.path.exists(LIBRETRANSLATE_EXE):
-        log("LibreTranslate is not installed. Run setup.ps1 first.")
+    if args.workers > 0 and not os.path.isdir(os.path.join(common.argos_data_dir(), "packages")):
+        log(f"No language models in {common.argos_data_dir()}. Run setup.cmd (or install_models.cmd) first.")
         return 1
 
     # Claim the port first: if something already runs there, stop before starting any workers
@@ -602,7 +573,7 @@ def main():
         server = ExclusiveHTTPServer((args.host, args.port), make_handler(pool))
     except OSError as error:
         log(f"ERROR: cannot listen on {args.host}:{args.port} ({error}). "
-            f"Another program (maybe another LibreTranslate server) is using this port. "
+            f"Another program (maybe another translation server) is using this port. "
             f"Stop it or use a different -Port.")
         return 1
 
@@ -621,7 +592,7 @@ def main():
 
     base = f"http://{args.host}:{args.port}"
     log(f"listening on {base}  (test routes: {base}/lb/health  {base}/lb/status  {base}/lb/selftest)")
-    log("workers load their language models now; the first start downloads them (can take minutes)")
+    log("workers are starting (loading Argos Translate takes a few seconds)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

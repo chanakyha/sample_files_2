@@ -16,7 +16,7 @@ namespace Translator
         public ConnectionCheckForm(AppSettings settings)
         {
             _settings = settings;
-            Text = "Check Connection - LibreTranslate";
+            Text = "Check Connection - Argos Translate";
             Width = 1000;
             Height = 450;
             StartPosition = FormStartPosition.CenterParent;
@@ -70,7 +70,7 @@ namespace Translator
 
             try
             {
-                var results = await ConnectionChecker.RunAsync(_settings.LibreTranslateUrl, _settings.LibreTranslateApiKey);
+                var results = await ConnectionChecker.RunAsync(_settings.ServerUrl);
                 foreach (var r in results)
                     _grid.Rows.Add(r.Check, r.Status, r.Details, r.Meaning);
 

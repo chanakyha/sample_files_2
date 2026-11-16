@@ -10,34 +10,36 @@ using System.Threading.Tasks;
 namespace Translator.Services
 {
     /// <summary>
-    /// LibreTranslate (open source, self-hosted, no usage limits).
-    /// API: https://libretranslate.com/docs
+    /// Client for the Argos Translate server (ArgosTranslateServer folder: load balancer + workers,
+    /// open source, offline, no usage limits). The server runs separately; this class only sends requests.
+    /// API:
     ///   GET  /languages  -> [{ "code": "en", "name": "English", "targets": [...] }, ...]
-    ///   POST /translate  { "q": ["a","b"], "source": "auto", "target": "fr", "format": "text", "api_key": "..." }
-    ///        -> { "translatedText": ["..",".."], "detectedLanguage": [{ "confidence": 90.0, "language": "en" }, ...] }
-    ///   POST /detect     { "q": "text" } -> [{ "confidence": 90.0, "language": "es" }, ...]
-    /// Each text is detected with /detect (accurate per text, confidence 0..100), then translated in
-    /// batches grouped by language, because /translate with source "auto" uses one language per batch.
+    ///   POST /detect     { "q": "text" } -> [{ "language": "es", "confidence": 70.4 }, ...] (best first, 0..100)
+    ///   POST /translate  { "q": ["a","b"], "source": "en" or "auto", "target": "fr", "format": "text" }
+    ///        -> { "translatedText": ["..",".."], "detectedLanguage": [{ "language": "en", "confidence": 90.0 }, ...] }
+    ///   GET  /lb/status  -> healthy workers behind the load balancer
+    /// Each text is detected with /detect (the ranked candidates are kept for the short-text check),
+    /// then translated in batches grouped by language with that language as explicit source.
     /// </summary>
-    public class LibreTranslateService : TranslationServiceBase
+    public class ArgosTranslateService : TranslationServiceBase
     {
         private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
         {
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
         };
 
-        // App code -> codes LibreTranslate may use for it (depends on the server version)
+        // App code -> codes Argos Translate may use for it
         private static readonly Dictionary<string, string[]> ServerCodeOptions = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            ["zh-CN"] = new[] { "zh-Hans", "zh", "zh-CN" },
+            ["zh-CN"] = new[] { "zh", "zh-Hans", "zh-CN" },
             ["he"] = new[] { "he", "iw" },
         };
 
         private const int DefaultParallel = 2;
         private const int RequestsPerWorker = 2;
+        private const int MaxAlternatives = 4;
 
         private readonly string _baseUrl;
-        private readonly string _apiKey;
         private readonly int _configuredParallel;
         private int _parallel = DefaultParallel;
         private Dictionary<string, string> _toServer;   // app code -> server code
@@ -45,28 +47,27 @@ namespace Translator.Services
 
         /// <param name="parallelRequests">
         /// Requests sent at the same time. 0 = automatic: 2 per healthy worker reported by the
-        /// load balancer (GET /lb/status), or 2 for a single LibreTranslate server.
+        /// load balancer (GET /lb/status), or 2 for a single worker.
         /// </param>
-        public LibreTranslateService(string baseUrl, string apiKey = null, TranslationCache cache = null, int parallelRequests = 0)
-            : base("libretranslate",
+        public ArgosTranslateService(string baseUrl, TranslationCache cache = null, int parallelRequests = 0)
+            : base("argos",
                    // Own server: no need to space requests out, but translation on CPU can be slow
                    new ThrottledHttp(baseInterval: TimeSpan.Zero, maxParallel: DefaultParallel, timeout: TimeSpan.FromMinutes(10), maxRetries: 3),
                    cache)
         {
             _baseUrl = (baseUrl ?? string.Empty).Trim().TrimEnd('/');
-            _apiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey.Trim();
             _configuredParallel = parallelRequests;
         }
 
-        public override string Name => "LibreTranslate";
+        public override string Name => "Argos Translate";
 
-        /// <summary>Healthy workers behind the load balancer (1 for a plain LibreTranslate server, 0 = not known yet).</summary>
+        /// <summary>Healthy workers behind the load balancer (1 for a single worker, 0 = not known yet).</summary>
         public int Workers { get; private set; }
 
         /// <summary>Requests sent at the same time.</summary>
         public int Parallel => _parallel;
 
-        // Smaller batches: a self-hosted server translates on CPU, so keep each request short
+        // Smaller batches: translation runs on CPU, so keep each request short
         // (also spreads the work evenly over the load balancer's workers)
         protected override int MaxBatchItems => 25;
         protected override int MaxBatchChars => 2000;
@@ -95,35 +96,15 @@ namespace Translator.Services
             }
 
             _toServer = map;
-            await WarmUpAsync(ct).ConfigureAwait(false);
             await ConfigureParallelismAsync(ct).ConfigureAwait(false);
             _supported = map.Keys.ToList();
             return _supported;
         }
 
         /// <summary>
-        /// One detection request before any parallel work. LibreTranslate initialises its language
-        /// detector on first use and that is not thread-safe: on a freshly started server, parallel
-        /// first requests mostly return "en" with 0% confidence (measured 1 of 16 correct cold,
-        /// 16 of 16 after one warm-up). The load balancer warms its workers itself; this covers a
-        /// plain LibreTranslate server.
-        /// </summary>
-        private async Task WarmUpAsync(CancellationToken ct)
-        {
-            try
-            {
-                await DetectAsync("Bonjour, ceci est un test de démarrage.", ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is HttpRequestException || ex is JsonException)
-            {
-                // Not fatal: real requests report their own errors
-            }
-        }
-
-        /// <summary>
         /// Asks the load balancer how many workers are healthy (GET /lb/status) and sends that many
-        /// requests in parallel (x2, so a worker never waits for the next request). A plain
-        /// LibreTranslate server has no /lb/status and counts as one worker.
+        /// requests in parallel (x2, so a worker never waits for the next request). A single worker
+        /// has no /lb/status and counts as one.
         /// </summary>
         private async Task ConfigureParallelismAsync(CancellationToken ct)
         {
@@ -145,9 +126,8 @@ namespace Translator.Services
         }
 
         /// <summary>
-        /// With source "auto", LibreTranslate detects ONE language for the whole batch (tested with 1.9.6),
-        /// so mixed-language batches would be translated from the wrong language. Instead each text is
-        /// detected with /detect, then texts are translated in groups with their language as explicit source.
+        /// Each text is detected with /detect (keeping the ranked candidates), then texts are
+        /// translated in groups with their language as explicit source.
         /// </summary>
         protected override async Task<List<BatchItem>> BatchAsync(List<string> texts, string source, string target, CancellationToken ct)
         {
@@ -179,17 +159,18 @@ namespace Translator.Services
                     {
                         Text = translated[k].Text,
                         Language = detections[i].Language ?? translated[k].Language,
-                        Confidence = detections[i].Confidence ?? translated[k].Confidence
+                        Confidence = detections[i].Confidence ?? translated[k].Confidence,
+                        Alternatives = detections[i].Alternatives
                     };
                 }
             }
             return results.ToList();
         }
 
-        /// <summary>POST /detect for one text: [{ "confidence": 90.0, "language": "es" }, ...] (best first).</summary>
+        /// <summary>POST /detect for one text: [{ "language": "es", "confidence": 70.4 }, ...] (best first).</summary>
         private async Task<BatchItem> DetectAsync(string text, CancellationToken ct)
         {
-            var body = JsonSerializer.Serialize(new Dictionary<string, object> { ["q"] = text, ["api_key"] = _apiKey }, JsonOptions);
+            var body = JsonSerializer.Serialize(new Dictionary<string, object> { ["q"] = text }, JsonOptions);
             var json = await Http.SendAsync(() => new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/detect")
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
@@ -200,6 +181,11 @@ namespace Translator.Services
             if (root.ValueKind != JsonValueKind.Array || root.GetArrayLength() == 0)
                 return new BatchItem();
 
+            var ranked = root.EnumerateArray()
+                .Select(e => FromServer(e.GetProperty("language").GetString()))
+                .Where(c => _toServer == null || _toServer.ContainsKey(c))
+                .ToList();
+
             var best = root[0];
             var language = FromServer(best.GetProperty("language").GetString());
             if (_toServer != null && !_toServer.ContainsKey(language))
@@ -209,8 +195,10 @@ namespace Translator.Services
             {
                 Language = language,
                 Confidence = best.TryGetProperty("confidence", out var c) && c.ValueKind == JsonValueKind.Number
-                    ? c.GetDouble() / 100.0 // LibreTranslate uses 0..100
-                    : (double?)null
+                    ? c.GetDouble() / 100.0 // the server uses 0..100
+                    : (double?)null,
+                Alternatives = ranked.Where(r => !string.Equals(r, language, StringComparison.OrdinalIgnoreCase))
+                    .Take(MaxAlternatives).ToList()
             };
         }
 
@@ -221,8 +209,7 @@ namespace Translator.Services
                 ["q"] = texts,
                 ["source"] = source == "auto" ? "auto" : ToServer(source),
                 ["target"] = ToServer(target),
-                ["format"] = "text",
-                ["api_key"] = _apiKey
+                ["format"] = "text"
             }, JsonOptions);
 
             var json = await Http.SendAsync(() => new HttpRequestMessage(HttpMethod.Post, _baseUrl + "/translate")
@@ -247,7 +234,7 @@ namespace Translator.Services
                     if (detected[i].TryGetProperty("language", out var lang))
                         item.Language = FromServer(lang.GetString());
                     if (detected[i].TryGetProperty("confidence", out var conf) && conf.ValueKind == JsonValueKind.Number)
-                        item.Confidence = conf.GetDouble() / 100.0; // LibreTranslate uses 0..100
+                        item.Confidence = conf.GetDouble() / 100.0; // the server uses 0..100
                 }
                 results.Add(item);
             }

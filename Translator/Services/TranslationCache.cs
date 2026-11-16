@@ -29,7 +29,7 @@ namespace Translator.Services
 
         public TranslationCache(string path = null)
         {
-            _path = path ?? DefaultPath("libretranslate");
+            _path = path ?? DefaultPath("argos");
             Load();
         }
 

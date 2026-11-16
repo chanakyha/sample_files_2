@@ -6,7 +6,7 @@ namespace Translator.Services
 {
     /// <summary>
     /// User settings, stored in %LocalAppData%\Translator\settings.json. Client settings only: the
-    /// LibreTranslate server has its own settings (LibreTranslateServer\config.json) and is run
+    /// Argos Translate server has its own settings (ArgosTranslateServer\config.json) and is run
     /// separately; the app never starts, stops or configures it.
     /// </summary>
     public class AppSettings
@@ -14,22 +14,20 @@ namespace Translator.Services
         private static readonly string FilePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Translator", "settings.json");
 
-        /// <summary>Address of the LibreTranslate server or load balancer.</summary>
-        public string LibreTranslateUrl { get; set; } = "http://127.0.0.1:5000";
-
-        public string LibreTranslateApiKey { get; set; } = "";
+        /// <summary>Address of the Argos Translate server (load balancer or single worker).</summary>
+        public string ServerUrl { get; set; } = "http://127.0.0.1:5000";
 
         /// <summary>Requests sent at the same time. 0 = automatic (2 per healthy worker).</summary>
         public int ParallelRequests { get; set; } = 0;
 
-        public LibreTranslateService CreateService() =>
-            new LibreTranslateService(LibreTranslateUrl, LibreTranslateApiKey, parallelRequests: ParallelRequests);
+        public ArgosTranslateService CreateService() =>
+            new ArgosTranslateService(ServerUrl, parallelRequests: ParallelRequests);
 
         public static AppSettings Load()
         {
             try
             {
-                // Settings of older versions (server folder, workers, auto start) are ignored
+                // Settings of older versions (older server address and options) are ignored
                 if (File.Exists(FilePath))
                     return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
             }

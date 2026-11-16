@@ -9,7 +9,7 @@ namespace Translator.Services
     {
         public const string Default = "en";
 
-        // The 24 target languages offered in the "Translate" menu (ISO codes; mapped to the server's codes by LibreTranslateService)
+        // The 24 target languages offered in the "Translate" menu (ISO codes; mapped to the server's codes by ArgosTranslateService)
         public static readonly IReadOnlyDictionary<string, string> Targets =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {

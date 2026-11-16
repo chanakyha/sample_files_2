@@ -17,14 +17,14 @@ namespace Translator.Services
     }
 
     /// <summary>
-    /// Checks the LibreTranslate server / load balancer configured in the settings. Read-only: it
+    /// Checks the Argos Translate server / load balancer configured in the settings. Read-only: it
     /// only sends requests (the server is run and configured separately).
     /// Uses the load balancer's test routes: GET /lb/health and GET /lb/selftest (a real test of
     /// every worker), then one translation through the app's own code path.
     /// </summary>
     public static class ConnectionChecker
     {
-        public static async Task<List<CheckResult>> RunAsync(string baseUrl, string apiKey)
+        public static async Task<List<CheckResult>> RunAsync(string baseUrl)
         {
             var results = new List<CheckResult>
             {
@@ -32,7 +32,7 @@ namespace Translator.Services
             };
 
             var cache = new TranslationCache(Path.Combine(Path.GetTempPath(), "translator-check-" + Guid.NewGuid() + ".json"));
-            var service = new LibreTranslateService(baseUrl, apiKey, cache);
+            var service = new ArgosTranslateService(baseUrl, cache);
 
             var languages = new CheckResult { Check = "Server reachable" };
             IReadOnlyCollection<string> supported = null;
@@ -42,19 +42,19 @@ namespace Translator.Services
                 languages.Status = "OK";
                 languages.Details = $"{supported.Count} of 24 languages loaded: {string.Join(", ", supported)}";
                 languages.Meaning = supported.Count < 24
-                    ? "Missing languages are greyed out in the Translate menu. Set \"languages\": \"all\" in LibreTranslateServer\\config.json to load all."
+                    ? "Missing languages are greyed out in the Translate menu. Add them to \"languages\" in ArgosTranslateServer\\config.json and run install_models.cmd."
                     : "All languages are available.";
             }
             catch (Exception ex)
             {
                 languages.Status = "Failed";
                 languages.Details = ex.Message;
-                languages.Meaning = "The server is not running (start LibreTranslateServer\\start.cmd), still starting, the address is wrong, or a firewall blocks it.";
+                languages.Meaning = "The server is not running (start ArgosTranslateServer\\start.cmd), still starting, the address is wrong, or a firewall blocks it.";
             }
             results.Add(languages);
 
             if (supported != null)
-                results.AddRange(await LoadBalancerAsync(baseUrl, apiKey));
+                results.AddRange(await LoadBalancerAsync(baseUrl));
 
             var request = new CheckResult { Check = "Translation request" };
             if (supported == null)
@@ -81,7 +81,7 @@ namespace Translator.Services
                 Status = request.Status != "OK" ? "Failed" : failed ? "Warning" : "OK",
                 Details = request.Status != "OK" ? "Translation is not available."
                     : failed ? $"Translation works, but some workers failed their test ({service.Workers} healthy worker(s) used)."
-                    : $"LibreTranslate is ready ({service.Workers} worker(s), {service.Parallel} parallel requests).",
+                    : $"Argos Translate is ready ({service.Workers} worker(s), {service.Parallel} parallel requests).",
                 Meaning = ""
             });
             return results;
@@ -89,9 +89,9 @@ namespace Translator.Services
 
         /// <summary>
         /// GET /lb/health, then GET /lb/selftest: one row per backend with the checks that failed.
-        /// A plain LibreTranslate server (no /lb routes) gets one Info row.
+        /// A single worker (no /lb routes) gets one Info row.
         /// </summary>
-        private static async Task<List<CheckResult>> LoadBalancerAsync(string baseUrl, string apiKey)
+        private static async Task<List<CheckResult>> LoadBalancerAsync(string baseUrl)
         {
             var rows = new List<CheckResult>();
             var url = baseUrl.TrimEnd('/');
@@ -110,8 +110,8 @@ namespace Translator.Services
                 {
                     Check = "Load balancer",
                     Status = "Info",
-                    Details = "Not detected (single LibreTranslate server, or an older load balancer without /lb/health)",
-                    Meaning = "For more speed, run LibreTranslateServer\\start.cmd with \"workers\" set in config.json."
+                    Details = "Not detected (single worker, or an older load balancer without /lb/health)",
+                    Meaning = "For more speed, run ArgosTranslateServer\\start.cmd with \"workers\" set in config.json."
                 });
                 return rows;
             }
@@ -132,8 +132,7 @@ namespace Translator.Services
 
             try
             {
-                var query = string.IsNullOrWhiteSpace(apiKey) ? "" : "?api_key=" + Uri.EscapeDataString(apiKey.Trim());
-                using var response = await http.GetAsync(url + "/lb/selftest" + query);
+                using var response = await http.GetAsync(url + "/lb/selftest");
                 using var report = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
                 var r = report.RootElement;
                 rows.Add(new CheckResult
@@ -157,7 +156,7 @@ namespace Translator.Services
                         Details = passed
                             ? $"{checks.Count} checks passed ({string.Join(", ", checks.Select(c => c.GetProperty("check").GetString()))})"
                             : string.Join("; ", failedChecks),
-                        Meaning = passed ? "" : "Down, still loading models, or wrong results: it gets no requests while it is unhealthy. See LibreTranslateServer\\logs."
+                        Meaning = passed ? "" : "Down, still loading models, or wrong results: it gets no requests while it is unhealthy. See ArgosTranslateServer\\logs."
                     });
                 }
             }

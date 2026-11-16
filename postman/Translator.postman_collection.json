@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "Translator - LibreTranslate API tests",
-    "description": "Tests the LibreTranslate load balancer used by the Translator app (default http://127.0.0.1:5000). The server runs separately: start it with LibreTranslateServer\\start.cmd (settings in LibreTranslateServer\\config.json).\n\nLoad balancer test routes:\n- GET  /lb/health    quick check: 200 / 503\n- GET  /lb/status    every backend with counters\n- GET  /lb/selftest  real test of every worker: 200 when all pass, 503 + details when any fails\n\nLibreTranslate routes (forwarded to a worker):\n- GET  /languages\n- POST /detect      {\"q\": \"text\"}\n- POST /translate   {\"q\": \"text\" or [..], \"source\": \"auto\"|code, \"target\": code, \"format\": \"text\"}\n\nNote: /translate with source \"auto\" and several texts detects ONE language for the whole batch. The app therefore calls /detect per text and translates with an explicit source (folder 3 shows this).\n\nFolders:\n1. Server and load balancer (test routes)\n2. Language detection\n3. Translation\n4. Data-driven: run with the Collection Runner and translation-data.csv\n5. Errors\n\nCommand-line alternative without Postman: LibreTranslateServer\\.venv\\Scripts\\python check_server.py",
+    "name": "Translator - Argos Translate API tests",
+    "description": "Tests the Argos Translate server used by the Translator app (default http://127.0.0.1:5000). The server runs separately: start it with ArgosTranslateServer\\start.cmd (settings in ArgosTranslateServer\\config.json).\n\nLoad balancer test routes:\n- GET  /lb/health    quick check: 200 / 503\n- GET  /lb/status    every backend with counters\n- GET  /lb/selftest  real test of every worker: 200 when all pass, 503 + details when any fails\n\nTranslation routes (forwarded to a worker, worker.py):\n- GET  /languages\n- POST /detect      {\"q\": \"text\"} -> candidates, best first, confidence 0..100\n- POST /translate   {\"q\": \"text\" or [..], \"source\": \"auto\"|code, \"target\": code, \"format\": \"text\"}\n\nWith source \"auto\" every text is detected on its own, so one batch may mix languages.\n\nFolders:\n1. Server and load balancer (test routes)\n2. Language detection\n3. Translation\n4. Data-driven: run with the Collection Runner and translation-data.csv\n5. Errors\n\nCommand-line alternative without Postman: ArgosTranslateServer\\.venv\\Scripts\\python check_server.py",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -176,7 +176,7 @@
                 "exec": [
                   "pm.test('Status 200', () => pm.response.to.have.status(200));",
                   "pm.test('Detected French', () => pm.expect(pm.response.json()[0].language).to.eql('fr'));",
-                  "pm.test('High confidence', () => pm.expect(pm.response.json()[0].confidence).to.be.at.least(90));"
+                  "pm.test('High confidence (at least 80)', () => pm.expect(pm.response.json()[0].confidence).to.be.at.least(80));"
                 ]
               }
             }
@@ -316,7 +316,7 @@
           }
         },
         {
-          "name": "Detect short word (Ciao) - low confidence, app verifies it",
+          "name": "Detect short word (Ciao) - Italian, low confidence, app verifies it",
           "event": [
             {
               "listen": "test",
@@ -324,8 +324,12 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Status 200', () => pm.response.to.have.status(200));",
-                  "// LibreTranslate is unsure about Ciao; the app checks such words with a round trip and corrects them to Italian",
-                  "pm.test('Confidence below 90 (app will verify)', () => pm.expect(pm.response.json()[0].confidence).to.be.below(90));"
+                  "const r = pm.response.json();",
+                  "// Single words are ambiguous: the detector is right but unsure, and lists the next candidates.",
+                  "// The app checks short, unsure texts with a round trip (candidate -> English -> back).",
+                  "pm.test('Detected Italian', () => pm.expect(r[0].language).to.eql('it'));",
+                  "pm.test('Confidence below 90 (app will verify)', () => pm.expect(r[0].confidence).to.be.below(90));",
+                  "pm.test('Next candidates listed', () => pm.expect(r.length).to.be.at.least(2));"
                 ]
               }
             }
@@ -512,7 +516,7 @@
           }
         },
         {
-          "name": "Mixed batch with source auto (shows the one-language limitation)",
+          "name": "Mixed batch with source auto (each text detected on its own)",
           "event": [
             {
               "listen": "test",
@@ -520,11 +524,12 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Status 200', () => pm.response.to.have.status(200));",
-                  "const langs = pm.response.json().detectedLanguage.map(d => d.language);",
-                  "// LibreTranslate 1.9.x gives every text in an 'auto' batch the same language.",
-                  "// This is why the app detects each text with /detect first.",
-                  "pm.test('Same language reported for all texts (known limitation)', () => pm.expect(new Set(langs).size).to.eql(1));",
-                  "console.log('Detected for all texts: ' + langs.join(', '));"
+                  "const r = pm.response.json();",
+                  "const langs = r.detectedLanguage.map(d => d.language);",
+                  "// The worker detects every text separately, so one batch can mix languages",
+                  "pm.test('One translation per text', () => pm.expect(r.translatedText.length).to.eql(langs.length));",
+                  "pm.test('Every language detected', () => pm.expect(new Set(langs).size).to.eql(langs.length));",
+                  "console.log('Detected: ' + langs.join(', '));"
                 ]
               }
             }

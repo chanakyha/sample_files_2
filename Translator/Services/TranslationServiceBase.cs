@@ -19,6 +19,9 @@ namespace Translator.Services
 
         /// <summary>Detection confidence 0..1, or null when unknown.</summary>
         public double? Confidence { get; set; }
+
+        /// <summary>Next most likely languages from the detector, best first (app codes); may be empty.</summary>
+        public List<string> Alternatives { get; set; } = new List<string>();
     }
 
     /// <summary>
@@ -28,20 +31,24 @@ namespace Translator.Services
     ///   workers is kept busy
     /// - disk cache (a text is never translated twice for the same target)
     /// - throttling + retry/backoff on rate limiting or busy servers (<see cref="ThrottledHttp"/>)
-    /// - language-detection fix for borrowed words ("Ciao", "Gracias" labelled English):
-    ///   short texts labelled English with low confidence are verified with a batched round trip
-    ///   (text → English → back) for each candidate language; the language that returns the
-    ///   original text is the real one.
+    /// - language-detection check for short texts: single words like "Ciao", "Merci" or "Hello"
+    ///   are ambiguous for any detector. Short texts detected with low confidence are verified with
+    ///   a batched round trip per candidate language (the detector's ranking first): text → pivot →
+    ///   back. The language that returns the original text is the real one.
     /// </summary>
     public abstract class TranslationServiceBase : ITranslationService
     {
         protected const string Pivot = "en";
         private const double ConfidenceThreshold = 0.9;
         private const int MaxWordsToVerify = 3;
+        private const int MaxCandidatesPerText = 6;
 
-        // Borrowed words mislabelled as English are written in Latin script, most likely first
+        // Tried after the detector's own candidates (Latin-script languages, most likely first)
         private static readonly string[] CandidateLanguages =
-            { "es", "fr", "it", "de", "pt", "nl", "sv", "pl", "tr", "id", "vi" };
+            { "en", "es", "fr", "it", "de", "pt", "nl", "sv", "pl", "tr", "id", "vi" };
+
+        // Pivot for checking English itself (English -> X -> English)
+        private static readonly string[] EnglishCheckPivots = { "fr", "es", "de", "it", "pt" };
 
         protected readonly ThrottledHttp Http;
         private readonly TranslationCache _cache;
@@ -52,7 +59,7 @@ namespace Translator.Services
             _cache = cache ?? new TranslationCache(TranslationCache.DefaultPath(cacheName));
         }
 
-        /// <summary>Display name, e.g. "LibreTranslate".</summary>
+        /// <summary>Display name, e.g. "Argos Translate".</summary>
         public abstract string Name { get; }
 
         protected virtual int MaxBatchItems => 100;
@@ -108,9 +115,7 @@ namespace Translator.Services
                 }
                 else
                 {
-                    run.Candidates = CandidateLanguages
-                        .Where(c => supported == null || supported.Contains(c, StringComparer.OrdinalIgnoreCase))
-                        .ToList();
+                    run.Supported = supported;
                     await TranslateUniqueAsync(unique, run, ct).ConfigureAwait(false);
                 }
             }
@@ -147,7 +152,7 @@ namespace Translator.Services
             var autoTexts = todo.Except(corrected).ToList();
 
             // 1. Detect + translate in parallel batches
-            var suspects = new List<string>();
+            var suspects = new Dictionary<string, List<string>>(); // text -> languages to try, best first
             var autoTranslations = new Dictionary<string, string>();
 
             await ForEachBatchAsync(autoTexts, "auto", target, run, ct, (text, item) =>
@@ -159,10 +164,14 @@ namespace Translator.Services
                     _cache.SetDetection(text, detection);
                 }
 
-                if (!known && Languages.SameLanguage(detection.Code, Pivot) && WordCount(text) <= MaxWordsToVerify
-                    && detection.Confidence < ConfidenceThreshold)
+                if (!known && WordCount(text) <= MaxWordsToVerify && detection.Confidence < ConfidenceThreshold)
                 {
-                    suspects.Add(text); // possibly a borrowed word: verify before saving
+                    // Short and unsure: verify before saving (detected language first, then the
+                    // detector's next guesses, then the usual suspects)
+                    suspects[text] = new[] { detection.Code }.Concat(item.Alternatives).Concat(CandidateLanguages)
+                        .Where(c => !string.IsNullOrEmpty(c) && run.IsSupported(c))
+                        .Select(Languages.Normalize).Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Take(MaxCandidatesPerText).ToList();
                     autoTranslations[text] = item.Text;
                 }
                 else
@@ -175,17 +184,18 @@ namespace Translator.Services
             // 2. Find the real language of low-confidence short texts (batched round trip)
             var verified = await VerifyLanguagesAsync(suspects, run, ct).ConfigureAwait(false);
 
-            foreach (var text in suspects)
+            foreach (var text in suspects.Keys)
             {
                 _cache.TryGetDetection(text, out var d);
-                if (verified.TryGetValue(text, out var lang))
+                if (verified.TryGetValue(text, out var lang) && !Languages.SameLanguage(lang, d?.Code))
                 {
+                    // The detector picked another language: translate again with the verified one
                     _cache.SetDetection(text, new DetectionInfo { Code = lang, Corrected = true, Confidence = d?.Confidence ?? 0 });
                     corrected.Add(text);
                     continue;
                 }
 
-                if (d != null) d.Uncertain = true;
+                if (d != null && lang == null) d.Uncertain = true; // confirmed = not uncertain
                 _cache.SetTranslation(target, text, autoTranslations[text]);
                 run.Done++;
             }
@@ -213,38 +223,48 @@ namespace Translator.Services
         }
 
         /// <summary>
-        /// For each candidate language (most likely first): translate all pending texts candidate→English
-        /// in one batch, then English→candidate in one batch. Texts that come back unchanged are that
-        /// language. Stops as soon as every text is resolved.
+        /// Round k: every pending text is tried with its k-th candidate language. Per candidate, all
+        /// its texts are translated candidate→pivot in one batch and back in one batch (pivot is
+        /// English, or French when the candidate is English). A text that changes on the way out and
+        /// comes back as itself is in that language. Stops when every text is resolved.
         /// </summary>
-        private async Task<Dictionary<string, string>> VerifyLanguagesAsync(List<string> texts, Run run, CancellationToken ct)
+        private async Task<Dictionary<string, string>> VerifyLanguagesAsync(Dictionary<string, List<string>> candidates, Run run, CancellationToken ct)
         {
             var verified = new Dictionary<string, string>();
-            var pending = texts.ToList();
+            var pending = candidates.Keys.ToList();
 
-            foreach (var candidate in run.Candidates)
+            for (var round = 0; pending.Count > 0 && round < MaxCandidatesPerText; round++)
             {
-                if (pending.Count == 0) break;
-                run.Report($"Verifying language of {pending.Count} word(s): trying {Languages.GetName(candidate)}...");
+                var groups = pending.Where(t => candidates[t].Count > round).GroupBy(t => candidates[t][round]).ToList();
+                if (groups.Count == 0) break;
 
-                var forward = new List<(string Text, string English)>();
-                await ForEachBatchAsync(pending, candidate, Pivot, null, ct, (text, item) =>
+                foreach (var group in groups)
                 {
-                    if (!Same(item.Text, text)) forward.Add((text, item.Text));
-                }).ConfigureAwait(false);
-                if (forward.Count == 0) continue;
+                    var candidate = group.Key;
+                    var pivot = Languages.SameLanguage(candidate, Pivot)
+                        ? EnglishCheckPivots.FirstOrDefault(run.IsSupported)
+                        : Pivot;
+                    if (pivot == null) continue;
+                    run.Report($"Verifying language of {pending.Count} short text(s): trying {Languages.GetName(candidate)}...");
 
-                var backTexts = forward.Select(f => f.English).Distinct().ToList();
-                var back = new Dictionary<string, string>();
-                await ForEachBatchAsync(backTexts, Pivot, candidate, null, ct, (english, item) => back[english] = item.Text)
-                    .ConfigureAwait(false);
-
-                foreach (var (text, english) in forward)
-                {
-                    if (back.TryGetValue(english, out var roundTrip) && Same(roundTrip, text))
+                    var forward = new List<(string Text, string Out)>();
+                    await ForEachBatchAsync(group.ToList(), candidate, pivot, null, ct, (text, item) =>
                     {
-                        verified[text] = candidate;
-                        pending.Remove(text);
+                        if (!Same(item.Text, text)) forward.Add((text, item.Text)); // unchanged proves nothing
+                    }).ConfigureAwait(false);
+                    if (forward.Count == 0) continue;
+
+                    var back = new Dictionary<string, string>();
+                    await ForEachBatchAsync(forward.Select(f => f.Out).Distinct().ToList(), pivot, candidate, null, ct,
+                        (outText, item) => back[outText] = item.Text).ConfigureAwait(false);
+
+                    foreach (var (text, outText) in forward)
+                    {
+                        if (back.TryGetValue(outText, out var roundTrip) && Same(roundTrip, text))
+                        {
+                            verified[text] = candidate;
+                            pending.Remove(text);
+                        }
                     }
                 }
             }
@@ -412,7 +432,11 @@ namespace Translator.Services
             public string Target { get; }
             public int Done { get; set; }
             public int Total { get; set; }
-            public List<string> Candidates { get; set; } = new List<string>();
+            /// <summary>Languages the server has (app codes), or null when unknown (= all).</summary>
+            public IReadOnlyCollection<string> Supported { get; set; }
+
+            public bool IsSupported(string code) =>
+                Supported == null || Supported.Contains(Languages.Normalize(code), StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, string> Errors { get; } = new Dictionary<string, string>();
 
             public void Report(string message) => Report(Done, Total, message);

@@ -1,0 +1,12 @@
+{
+  "comment": "Argos Translate server settings, read by load_balancer.py, worker.py and install_models.py. Restart the server (stop.cmd, start.cmd) after changing them. Clients like the Translator app never change these.",
+  "host": "127.0.0.1",
+  "port": 5000,
+  "workers": 1,
+  "worker_base_port": 0,
+  "languages": "en,fr,es,de,it,pt",
+  "threads_per_worker": 0,
+  "backends": [],
+  "proxy": "",
+  "log_file": "server.log"
+}
